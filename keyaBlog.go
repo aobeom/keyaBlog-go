@@ -8,11 +8,14 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/PuerkitoBio/goquery"
 )
@@ -32,6 +35,23 @@ type Blogs struct {
 	imgs   []string
 }
 
+// BlogMode 博客地址结构
+type BlogMode struct {
+	mode   string
+	url    string
+	number []string
+	tag    string
+	status bool
+}
+
+// request 统一请求结构
+func request(method string, url string, body io.Reader) (*http.Response, error) {
+	client := http.Client{Timeout: 30 * time.Second}
+	req, _ := http.NewRequest(method, url, body)
+	req.Header.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/62.0.3202.94 Safari/537.36")
+	return client.Do(req)
+}
+
 // getCurrentDirectory 获取当前路径
 func getCurrentDirectory() string {
 	dir, err := filepath.Abs(filepath.Dir(os.Args[0]))
@@ -41,7 +61,7 @@ func getCurrentDirectory() string {
 	return strings.Replace(dir, "\\", "/", -1)
 }
 
-// PathExists 判断文件夹是否存在
+// pathExists 判断文件夹是否存在
 func pathExists(path string) (bool, error) {
 	_, err := os.Stat(path)
 	if err == nil {
@@ -51,6 +71,18 @@ func pathExists(path string) (bool, error) {
 		return false, nil
 	}
 	return false, err
+}
+
+// urlCheck 检查地址有效性
+func urlCheck(url string) (valid string, ok bool) {
+	if strings.Contains(url, "http://www.keyakizaka46.com/s/k46o") {
+		valid = url
+		ok = true
+	} else {
+		valid = ""
+		ok = false
+	}
+	return
 }
 
 // PurifyBlog 提取文本
@@ -81,56 +113,170 @@ func ImgURLGet(blogText string) (imgs []string) {
 	return
 }
 
-// SaveToText 保存内容
-func SaveToText(blogRaw *goquery.Document, dl *DLserver, thread int) {
-	blogInfo, savename := FormatInfo(blogRaw)
-	// 创建保存的目录 文件名
-	blogMain := blogInfo.title + "\r\n" + blogInfo.date + "\r\n" + blogInfo.text
-	imgs := blogInfo.imgs
-	mainFolder := getCurrentDirectory() + "//" + blogInfo.author
-	mainExist, _ := pathExists(mainFolder)
-	if !mainExist {
-		os.Mkdir(mainFolder, os.ModePerm)
-	}
-	subFolder := mainFolder + "//" + savename
-	subExist, _ := pathExists(subFolder)
-	if !subExist {
-		os.Mkdir(subFolder, os.ModePerm)
-	}
-	filename := subFolder + "//" + savename + ".txt"
+// pageURLs 从每页获取单篇博客的地址
+func pageURLs(url string) (urls []string) {
+	blogRaw := GetBlogRaw(url)
+	var urlsTmp []string
+	blogRaw.Find("article .box-bottom").Each(func(i int, s *goquery.Selection) {
+		u, _ := s.Find("a").Attr("href")
+		u = "http://www.keyakizaka46.com" + u
+		urlsTmp = append(urlsTmp, u)
+	})
+	urls = urlsTmp
+	return
+}
 
-	// 启用多核
-	runtime.GOMAXPROCS(runtime.NumCPU())
-	// 用channel阻塞控制goroutine的数量
-	dl.Gonum = make(chan string, thread)
-	// 当前任务数量
-	tasks := len(imgs)
-	dl.WG.Add(tasks)
-	log.Printf("Total [%d]\n", tasks)
-	// 执行下载
-	for _, img := range imgs {
-		dl.Gonum <- img
-		go downloadEngine(img, subFolder, dl)
+// MultiPageURLs 获取指定页数的所有地址
+func MultiPageURLs(tag string, numArray []string, url string) (urls []string) {
+	page := getCurrentPage(url)
+	number, _ := strconv.ParseInt(numArray[0], 10, 64)
+	num := int(number)
+	var pageURLTmp []string
+	for num >= 0 {
+		u := replaceURL(url, page, false)
+		pageURLTmp = append(pageURLTmp, u)
+		if tag == "puls" {
+			page++
+		} else {
+			page--
+		}
+		num--
 	}
-	dl.WG.Wait()
-	ioutil.WriteFile(filename, []byte(blogMain), 0644)
-	log.Printf("All is down")
+	for _, pageU := range pageURLTmp {
+		url := pageURLs(pageU)
+		urls = append(urls, url...)
+	}
+	return
+}
+
+// singlePageTurn 查找翻页标签
+func singlePageTurn(tag string, url string) (turl string, isExist bool) {
+	if tag == "plus" {
+		blogRaw := GetBlogRaw(url)
+		nextURL, _ := blogRaw.Find(".btn-next").Find("a").Attr("href")
+		if len(nextURL) > 0 {
+			turl = "http://www.keyakizaka46.com" + nextURL
+			isExist = true
+		} else {
+			turl = ""
+			isExist = false
+		}
+	} else if tag == "minus" {
+		blogRaw := GetBlogRaw(url)
+		prevURL, _ := blogRaw.Find(".btn-prev").Find("a").Attr("href")
+		if len(prevURL) > 0 {
+			turl = "http://www.keyakizaka46.com" + prevURL
+			isExist = true
+		} else {
+			turl = ""
+			isExist = false
+		}
+	} else {
+		turl = ""
+		isExist = false
+	}
+	return
+}
+
+// singleURLs 自动翻页
+func singleURLs(tag string, numArray []string, url string) (urls []string) {
+	urls = append(urls, url)
+	number, _ := strconv.ParseInt(numArray[0], 10, 64)
+	num := int(number)
+	var urltmp string
+	urltmp = url
+	for num > 0 {
+		purl, isExist := singlePageTurn(tag, urltmp)
+		if isExist {
+			urls = append(urls, purl)
+			urltmp = purl
+		}
+		num--
+	}
+	return urls
+}
+
+// numAnalysis 获取博客的数量
+func numAnalysis(num string) (tag string, number []string) {
+	regPlus := regexp.MustCompile(`^\+[0-9]+$`)
+	regMinus := regexp.MustCompile(`^\-[0-9]+$`)
+	regRange := regexp.MustCompile(`^[0-9]+\-[0-9]+$`)
+	if num == "1" {
+		number = []string{num}
+		tag = "one"
+	} else if regPlus.MatchString(num) {
+		numParts := strings.Split(num, "")
+		tag = "plus"
+		number = []string{numParts[1]}
+	} else if regMinus.MatchString(num) {
+		numParts := strings.Split(num, "")
+		tag = "minus"
+		number = []string{numParts[1]}
+	} else if regRange.MatchString(num) {
+		numParts := strings.Split(num, "")
+		if numParts[0] < numParts[2] {
+			tag = "range"
+			sta, _ := strconv.ParseInt(numParts[0], 10, 16)
+			end, _ := strconv.ParseInt(numParts[2], 10, 16)
+			numTemp := []string{}
+			for i := sta; i <= end; i++ {
+				newi := strconv.FormatInt(i, 10)
+				numTemp = append(numTemp, newi)
+			}
+			number = numTemp
+		} else {
+			number = []string{"None"}
+			tag = "None"
+		}
+	} else {
+		number = []string{"None"}
+		tag = "None"
+	}
+	return
+}
+
+// getCurrentPage 获取当前页码
+func getCurrentPage(url string) (page int) {
+	regPage := regexp.MustCompile(`page=[0-9]+`)
+	currentPageStr := regPage.FindAllString(url, -1)[0]
+	pageStr := strings.Split(currentPageStr, "=")[1]
+	page, _ = strconv.Atoi(pageStr)
+	return
+}
+
+// replaceURL 生成所有页的地址
+func replaceURL(url string, page int, flag bool) (nurl string) {
+	regPage := regexp.MustCompile(`page=[0-9]+`)
+	if flag {
+		page = page - 1
+	} else {
+		page = page
+	}
+	newp := "page=" + strconv.Itoa(page)
+	nurl = regPage.ReplaceAllString(url, newp)
+	return
+}
+
+// GetBlogRaw 获取原始内容
+func GetBlogRaw(url string) *goquery.Document {
+	res, _ := request("GET", url, nil)
+	defer res.Body.Close()
+	// 返回goquery的结构
+	body, _ := goquery.NewDocumentFromReader(res.Body)
+	return body
 }
 
 // downloadEngine 下载函数
-func downloadEngine(img string, path string, dl *DLserver) {
-	client := &http.Client{}
+func downloadEngine(id int, img string, path string, dl *DLserver) {
 	urlCut := strings.Split(img, "/")
 	filename := urlCut[len(urlCut)-1]
-	req, _ := http.NewRequest("GET", img, nil)
-	log.Printf("[%s is Start..]\n", filename)
-	req.Header.Add("User-Agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 11_0 like Mac OS X) AppleWebKit/604.1.38 (KHTML, like Gecko) Version/11.0 Mobile/15A372 Safari/604.1")
-	res, _ := client.Do(req)
+	log.Printf("<Task %d> [%s is start..]\n", id, filename)
+	res, _ := request("GET", img, nil)
 	defer res.Body.Close()
 	savePath := path + "//" + filename
 	file, _ := os.Create(savePath)
 	io.Copy(file, res.Body)
-	log.Printf("---- %s is done\n", filename)
+	log.Printf("<Task %d> [%s is done]\n", id, filename)
 	dl.WG.Done()
 	// 每个goroutine完成后取出
 	<-dl.Gonum
@@ -157,27 +303,188 @@ func FormatInfo(blogRaw *goquery.Document) (BlogInfo Blogs, Date string) {
 	return
 }
 
-// GetBlogRaw 获取原始内容
-func GetBlogRaw(url string) *goquery.Document {
-	log.Println("Get Blog Info...")
-	// 自定义UA的Get请求
-	client := &http.Client{}
-	req, _ := http.NewRequest("GET", url, nil)
-	req.Header.Add("User-Agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 11_0 like Mac OS X) AppleWebKit/604.1.38 (KHTML, like Gecko) Version/11.0 Mobile/15A372 Safari/604.1")
-	res, _ := client.Do(req)
-	defer res.Body.Close()
-	// 返回goquery的结构
-	body, _ := goquery.NewDocumentFromReader(res.Body)
-	return body
+// SaveToText 保存内容
+func SaveToText(id int, blogRaw *goquery.Document, dl *DLserver, thread int) {
+	blogInfo, savename := FormatInfo(blogRaw)
+	// 创建保存的目录 文件名
+	blogMain := blogInfo.title + "\r\n" + blogInfo.date + "\r\n" + blogInfo.text
+	imgs := blogInfo.imgs
+	mainFolder := getCurrentDirectory() + "//" + blogInfo.author
+	mainExist, _ := pathExists(mainFolder)
+	if !mainExist {
+		os.Mkdir(mainFolder, os.ModePerm)
+	}
+	subFolder := mainFolder + "//" + savename
+	subExist, _ := pathExists(subFolder)
+	if !subExist {
+		os.Mkdir(subFolder, os.ModePerm)
+	}
+	filename := subFolder + "//" + savename + ".txt"
+
+	// 启用多核
+	runtime.GOMAXPROCS(runtime.NumCPU())
+	// 用channel阻塞控制goroutine的数量
+	dl.Gonum = make(chan string, thread)
+	// 当前任务数量
+	tasks := len(imgs)
+	dl.WG.Add(tasks)
+	log.Printf("<Task %d> imgs [%d]\n", id, tasks)
+	// 执行下载
+	for _, img := range imgs {
+		dl.Gonum <- img
+		go downloadEngine(id, img, subFolder, dl)
+	}
+	dl.WG.Wait()
+	ioutil.WriteFile(filename, []byte(blogMain), 0644)
+	log.Printf("---- <Task %d> is all done ----", id)
+}
+
+// URLAnalysis 识别地址类型
+func URLAnalysis(url string, num string) (BlogMode BlogMode) {
+	if strings.Contains(url, "artist") {
+		tag, number := numAnalysis(num)
+		if tag != "None" {
+			urlParts := strings.Split(url, "/")
+			urlReform := urlParts[0] + "/" + urlParts[1] + "/" + urlParts[2] + "/" + urlParts[3] + "/" + urlParts[4] + "/diary/member/list?ima=0000&ct=20&cd=member&page=0"
+			BlogMode.mode = "page"
+			BlogMode.url = urlReform
+			BlogMode.number = number
+			BlogMode.tag = tag
+			BlogMode.status = true
+		} else {
+			BlogMode.status = false
+		}
+	} else if strings.Contains(url, "diary/member") {
+		tag, number := numAnalysis(num)
+		if tag != "None" {
+			var urlReform string
+			if strings.Contains(url, "page") {
+				urlReform = url
+			} else {
+				urlReform = url + "&cd=member&page=0"
+			}
+			BlogMode.mode = "page"
+			BlogMode.url = urlReform
+			BlogMode.number = number
+			BlogMode.tag = tag
+			BlogMode.status = true
+		} else {
+			BlogMode.status = false
+		}
+
+	} else if strings.Contains(url, "diary/detail") {
+		tag, number := numAnalysis(num)
+		if tag != "None" {
+			BlogMode.mode = "single"
+			BlogMode.url = url
+			BlogMode.number = number
+			BlogMode.tag = tag
+			BlogMode.status = true
+		} else {
+			BlogMode.status = false
+		}
+	} else {
+		BlogMode.status = false
+	}
+	return
+}
+
+// BlogURLsGet 获取所有博客地址
+func BlogURLsGet(BlogMode BlogMode) (urls []string) {
+	if BlogMode.status {
+		url := BlogMode.url
+		mode := BlogMode.mode
+		tag := BlogMode.tag
+		number := BlogMode.number
+		if mode == "single" {
+			if tag == "range" {
+				fmt.Println("NO support!")
+			} else if tag == "plus" {
+				urls = singleURLs(tag, number, url)
+			} else if tag == "minus" {
+				urls = singleURLs(tag, number, url)
+			} else {
+				urls = []string{url}
+			}
+		} else if mode == "page" {
+			if tag == "range" {
+				var pageURLTmp []string
+				for _, i := range number {
+					p, _ := strconv.Atoi(i)
+					u := replaceURL(url, p, true)
+					pageURLTmp = append(pageURLTmp, u)
+				}
+				for _, pageU := range pageURLTmp {
+					url := pageURLs(pageU)
+					urls = append(urls, url...)
+				}
+			} else if tag == "plus" {
+				urls = MultiPageURLs(tag, number, url)
+			} else if tag == "minus" {
+				urls = MultiPageURLs(tag, number, url)
+			} else {
+				urls = pageURLs(url)
+			}
+		}
+	} else {
+		fmt.Println("Page / URL error")
+	}
+	return
+}
+
+// BlogCore 并行获取博客内容
+func BlogCore(id int, url string, dl *DLserver) {
+	log.Printf("<Task %d> - %s", id, url)
+	blogRaw := GetBlogRaw(url)
+	dlImg := new(DLserver)
+	SaveToText(id, blogRaw, dlImg, 4)
+	dl.WG.Done()
+	<-dl.Gonum
+}
+
+// URLAllocate 分配url
+func URLAllocate(urls []string) {
+	dl := new(DLserver)
+	// 启用多核
+	runtime.GOMAXPROCS(runtime.NumCPU())
+	// 用channel阻塞控制goroutine的数量
+	dl.Gonum = make(chan string, 4)
+	// 当前任务数量
+	tasks := len(urls)
+	dl.WG.Add(tasks)
+	log.Printf("There are [%d] blogs\n", tasks)
+	for id, url := range urls {
+		id = id + 1
+		dl.Gonum <- url
+		go BlogCore(id, url, dl)
+	}
+	dl.WG.Wait()
 }
 
 func main() {
-	fmt.Println("http://www.keyakizaka46.com/s/k46o/diary/detail/15117?ima=0000&cd=member")
+	// 接收地址
+	fmt.Println("[Single Page]  http://www.keyakizaka46.com/s/k46o/diary/detail/15117?ima=0000&cd=member")
+	fmt.Println("[Page Index]   http://www.keyakizaka46.com/s/k46o/diary/member/list?ima=0000&page=1&cd=member&ct=20")
+	fmt.Println("[Profile Page] http://www.keyakizaka46.com/s/k46o/artist/20?ima=0000")
 	reader := bufio.NewReader(os.Stdin)
-	fmt.Print("Url: ")
-	data, _, _ := reader.ReadLine()
-	url := string(data)
-	dl := new(DLserver)
-	blogRaw := GetBlogRaw(url)
-	SaveToText(blogRaw, dl, 4)
+	fmt.Print("A Blog URL: ")
+	data1, _, _ := reader.ReadLine()
+	url, ok := urlCheck(string(data1))
+	if ok {
+		// 接收数量
+		fmt.Println("EXAMPLE: 1 [current] / +2 / -5 / 1-5 [Profile|Page]")
+		fmt.Print("Get Number: ")
+		data2, _, _ := reader.ReadLine()
+		num := string(data2)
+		// 调用函数
+		log.Println("Get Blog Info...")
+		URLMode := URLAnalysis(url, num)
+		blogURLs := BlogURLsGet(URLMode)
+		URLAllocate(blogURLs)
+	} else {
+		fmt.Println("Url is invalid ! Ctrl+C to exit.")
+		c := make(chan os.Signal, 1)
+		signal.Notify(c, os.Interrupt, os.Kill)
+		<-c
+	}
 }
