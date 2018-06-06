@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
@@ -33,6 +32,7 @@ type Blogs struct {
 	date   string
 	text   string
 	imgs   []string
+	url    string
 }
 
 // BlogMode 博客地址结构
@@ -87,8 +87,15 @@ func urlCheck(url string) (valid string, ok bool) {
 
 // PurifyBlog 提取文本
 func PurifyBlog(str string) (newStr string) {
-	regTag := regexp.MustCompile(`<[^img].*?>|<img src="|" alt=".*?"|id=".*?"/>|<.*?>|^[\s]*`)
-	newStr = regTag.ReplaceAllString(str, "\r\n")
+	// 标记图片位置
+	regImg := regexp.MustCompile(`<img`)
+	imgStr := regImg.ReplaceAllString(str, "IMG_TAG")
+	// 移除html标签
+	regTag := regexp.MustCompile(`<[^>]*>`)
+	txtStr := regTag.ReplaceAllString(imgStr, "\n")
+	// 移除图片标签
+	regLast := regexp.MustCompile(`IMG_TAG|<[^img].*?>|src="|" alt=".*?"|id=".*?"|width=".*?"|height=".*?"|"/>|/>|<.*?>|^[\s]*`)
+	newStr = regLast.ReplaceAllString(txtStr, "\n")
 	return
 }
 
@@ -101,8 +108,8 @@ func RemoveBlank(str string) (newStr string) {
 
 // MergeLine 合并换行符
 func MergeLine(str string) (newStr string) {
-	regSpa := regexp.MustCompile(`\s{2,}`)
-	newStr = regSpa.ReplaceAllString(str, "\r\n")
+	regTab := regexp.MustCompile(`\s{2,}`)
+	newStr = regTab.ReplaceAllString(str, "\r\n")
 	return
 }
 
@@ -135,16 +142,24 @@ func MultiPageURLs(tag string, numArray []string, url string) (urls []string) {
 	for num >= 0 {
 		u := replaceURL(url, page, false)
 		pageURLTmp = append(pageURLTmp, u)
-		if tag == "puls" {
+		if tag == "plus" {
 			page++
 		} else {
-			page--
+			if page >0 {
+				page--
+			} else {
+				break
+			}
 		}
 		num--
 	}
 	for _, pageU := range pageURLTmp {
 		url := pageURLs(pageU)
-		urls = append(urls, url...)
+		if len(url) > 0 {
+			urls = append(urls, url...)
+		} else {
+			break
+		}
 	}
 	return
 }
@@ -205,19 +220,19 @@ func numAnalysis(num string) (tag string, number []string) {
 		number = []string{num}
 		tag = "one"
 	} else if regPlus.MatchString(num) {
-		numParts := strings.Split(num, "")
+		numParts := strings.Split(num, "+")
 		tag = "plus"
 		number = []string{numParts[1]}
 	} else if regMinus.MatchString(num) {
-		numParts := strings.Split(num, "")
+		numParts := strings.Split(num, "-")
 		tag = "minus"
 		number = []string{numParts[1]}
 	} else if regRange.MatchString(num) {
-		numParts := strings.Split(num, "")
-		if numParts[0] < numParts[2] {
+		numParts := strings.Split(num, "-")
+		if numParts[0] < numParts[1] {
 			tag = "range"
 			sta, _ := strconv.ParseInt(numParts[0], 10, 16)
-			end, _ := strconv.ParseInt(numParts[2], 10, 16)
+			end, _ := strconv.ParseInt(numParts[1], 10, 16)
 			numTemp := []string{}
 			for i := sta; i <= end; i++ {
 				newi := strconv.FormatInt(i, 10)
@@ -282,8 +297,25 @@ func downloadEngine(id int, img string, path string, dl *DLserver) {
 	<-dl.Gonum
 }
 
+// WriteToFile 优化写入
+func WriteToFile(filename string, text string) {
+	saveFile, _ := os.OpenFile(filename, os.O_RDWR|os.O_CREATE, os.ModeType)
+	data := strings.NewReader(text)
+	buf := bufio.NewReader(data)
+	for {
+		line, err := buf.ReadString('\n')  
+		line = strings.TrimSpace(line)  
+		if len(line) > 0 {
+			io.WriteString(saveFile, line + "\r\n")
+		}
+		if err == io.EOF {
+			break
+		}  
+	}
+}
+
 // FormatInfo 格式化输出内容
-func FormatInfo(blogRaw *goquery.Document) (BlogInfo Blogs, Date string) {
+func FormatInfo(url string, blogRaw *goquery.Document) (BlogInfo Blogs, Date string) {
 	doc := blogRaw
 	Newbody := doc.Find("article")
 	BlogCont, _ := Newbody.Find(".box-article").Html()
@@ -295,6 +327,7 @@ func FormatInfo(blogRaw *goquery.Document) (BlogInfo Blogs, Date string) {
 	PurifyText := PurifyBlog(BlogCont)
 	BlogInfo.text = MergeLine(PurifyText)
 	BlogInfo.imgs = ImgURLGet(PurifyText)
+	BlogInfo.url = url
 
 	// 格式化时间作为目录名
 	BlogDateFormat := strings.Replace(RemoveBlank(BlogInfo.date), "/", "-", -1)
@@ -304,10 +337,10 @@ func FormatInfo(blogRaw *goquery.Document) (BlogInfo Blogs, Date string) {
 }
 
 // SaveToText 保存内容
-func SaveToText(id int, blogRaw *goquery.Document, dl *DLserver, thread int) {
-	blogInfo, savename := FormatInfo(blogRaw)
+func SaveToText(id int, url string, blogRaw *goquery.Document, dl *DLserver, thread int) {
+	blogInfo, savename := FormatInfo(url, blogRaw)
 	// 创建保存的目录 文件名
-	blogMain := blogInfo.title + "\r\n" + blogInfo.date + "\r\n" + blogInfo.text
+	blogMain := blogInfo.url + "\r\n" + blogInfo.title + "\r\n" + blogInfo.date + "\r\n" + blogInfo.text
 	imgs := blogInfo.imgs
 	mainFolder := getCurrentDirectory() + "//" + blogInfo.author
 	mainExist, _ := pathExists(mainFolder)
@@ -335,7 +368,7 @@ func SaveToText(id int, blogRaw *goquery.Document, dl *DLserver, thread int) {
 		go downloadEngine(id, img, subFolder, dl)
 	}
 	dl.WG.Wait()
-	ioutil.WriteFile(filename, []byte(blogMain), 0644)
+	WriteToFile(filename, blogMain)
 	log.Printf("---- <Task %d> is all done ----", id)
 }
 
@@ -443,7 +476,7 @@ func BlogCore(id int, url string, dl *DLserver) {
 	log.Printf("<Task %d> - %s", id, url)
 	blogRaw := GetBlogRaw(url)
 	dlImg := new(DLserver)
-	SaveToText(id, blogRaw, dlImg, 4)
+	SaveToText(id, url, blogRaw, dlImg, 4)
 	dl.WG.Done()
 	<-dl.Gonum
 }
