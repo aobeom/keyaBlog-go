@@ -345,7 +345,10 @@ func URLAnalysis(url string, num string) (BlogMode BlogMode) {
 		tag, number := numAnalysis(num)
 		if tag != "None" {
 			urlParts := strings.Split(url, "/")
-			urlReform := urlParts[0] + "/" + urlParts[1] + "/" + urlParts[2] + "/" + urlParts[3] + "/" + urlParts[4] + "/diary/member/list?ima=0000&ct=20&cd=member&page=0"
+			membercode := strings.Split(urlParts[6], "?")[0]
+			urlReform := urlParts[0] + "/" + urlParts[1] + "/" + urlParts[2] + "/" + urlParts[3] + "/" + urlParts[4] + "/diary/member/list?ima=0000&ct="+ membercode +"&cd=member&page=0"
+			fmt.Println(urlReform)
+			os.Exit(1)
 			BlogMode.mode = "page"
 			BlogMode.url = urlReform
 			BlogMode.number = number
@@ -390,13 +393,14 @@ func URLAnalysis(url string, num string) (BlogMode BlogMode) {
 }
 
 // BlogURLsGet 获取所有博客地址
-func BlogURLsGet(BlogMode BlogMode) (urls []string) {
+func BlogURLsGet(BlogMode BlogMode) (urls []string, stat bool) {
 	if BlogMode.status {
 		url := BlogMode.url
 		mode := BlogMode.mode
 		tag := BlogMode.tag
 		number := BlogMode.number
 		if mode == "single" {
+			stat = true
 			if tag == "range" {
 				fmt.Println("NO support!")
 			} else if tag == "plus" {
@@ -407,6 +411,7 @@ func BlogURLsGet(BlogMode BlogMode) (urls []string) {
 				urls = []string{url}
 			}
 		} else if mode == "page" {
+			stat = true
 			if tag == "range" {
 				var pageURLTmp []string
 				for _, i := range number {
@@ -427,7 +432,9 @@ func BlogURLsGet(BlogMode BlogMode) (urls []string) {
 			}
 		}
 	} else {
-		fmt.Println("Page / URL error")
+		urls = []string{}
+		stat = false
+		return 
 	}
 	return
 }
@@ -463,24 +470,35 @@ func URLAllocate(urls []string) {
 
 func main() {
 	// 接收地址
-	fmt.Println("[Single Page]  http://www.keyakizaka46.com/s/k46o/diary/detail/15117?ima=0000&cd=member")
-	fmt.Println("[Page Index]   http://www.keyakizaka46.com/s/k46o/diary/member/list?ima=0000&page=1&cd=member&ct=20")
-	fmt.Println("[Profile Page] http://www.keyakizaka46.com/s/k46o/artist/20?ima=0000")
+	tipSingle := "[URL Single Page | 按篇]\nhttp://www.keyakizaka46.com/s/k46o/diary/detail/15117?ima=0000&cd=member"
+	tipPage := "[URL Page Index | 按页]\nhttp://www.keyakizaka46.com/s/k46o/diary/member/list?ima=0000&page=1&cd=member&ct=20"
+	tipProfile := "[URL Profile Page | 按页]\nhttp://www.keyakizaka46.com/s/k46o/artist/20?ima=0000"
+	tipNum := "[Number Type | 数字类型]\n1 [current] | +4 / -6 Next or Prev | 1-5 a range of pages\n1 [当前页或篇] | +4 / -6 当前页或篇前后 | 1-5 一个页数范围"
+	fmt.Printf("A Blog URL and Number Type | 博客地址和获取方式\n")
+	fmt.Printf("---------Example-----------\n%s\n\n%s\n\n%s\n\n\n%s\n--------------------------\n", tipSingle, tipPage, tipProfile, tipNum)
 	reader := bufio.NewReader(os.Stdin)
 	fmt.Print("A Blog URL: ")
 	data1, _, _ := reader.ReadLine()
 	url, ok := urlCheck(string(data1))
 	if ok {
 		// 接收数量
-		fmt.Println("EXAMPLE: 1 [current] / +2 / -5 / 1-5 [Profile|Page]")
-		fmt.Print("Get Number: ")
+		fmt.Print("Number Type: ")
 		data2, _, _ := reader.ReadLine()
 		num := string(data2)
 		// 调用函数
 		log.Println("Get Blog Info...")
 		URLMode := URLAnalysis(url, num)
-		blogURLs := BlogURLsGet(URLMode)
-		URLAllocate(blogURLs)
+		blogURLs, stat := BlogURLsGet(URLMode)
+		if stat {
+			URLAllocate(blogURLs)
+			fmt.Println("Mission Completed.")
+		} else {
+			fmt.Println("URL / Number Type invalid.")
+		}
+		fmt.Println("Ctrl+C to exit.")
+		c := make(chan os.Signal, 1)
+		signal.Notify(c, os.Interrupt, os.Kill)
+		<-c
 	} else {
 		fmt.Println("Url is invalid ! Ctrl+C to exit.")
 		c := make(chan os.Signal, 1)
