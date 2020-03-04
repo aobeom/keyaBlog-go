@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"regexp"
 	"runtime"
 	"strconv"
@@ -48,16 +47,13 @@ type BlogMode struct {
 func request(method string, url string, body io.Reader) (*http.Response, error) {
 	client := http.Client{Timeout: 30 * time.Second}
 	req, _ := http.NewRequest(method, url, body)
-	req.Header.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/62.0.3202.94 Safari/537.36")
+	req.Header.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.122 Safari/537.36")
 	return client.Do(req)
 }
 
 // getCurrentDirectory 获取当前路径
 func getCurrentDirectory() string {
-	dir, err := filepath.Abs(filepath.Dir(os.Args[0]))
-	if err != nil {
-		log.Fatal(err)
-	}
+	dir, _ := os.Getwd()
 	return strings.Replace(dir, "\\", "/", -1)
 }
 
@@ -75,7 +71,7 @@ func pathExists(path string) (bool, error) {
 
 // urlCheck 检查地址有效性
 func urlCheck(url string) (valid string, ok bool) {
-	if strings.Contains(url, "http://www.keyakizaka46.com/s/k46o") {
+	if strings.Contains(url, "//www.keyakizaka46.com/s/k46o") {
 		valid = url
 		ok = true
 	} else {
@@ -115,7 +111,7 @@ func MergeLine(str string) (newStr string) {
 
 // ImgURLGet 获取图片地址
 func ImgURLGet(blogText string) (imgs []string) {
-	regJpg := regexp.MustCompile(`http:.*jpg`)
+	regJpg := regexp.MustCompile(`http[s]?:.*jpg`)
 	imgs = regJpg.FindAllString(blogText, -1)
 	return
 }
@@ -126,7 +122,7 @@ func pageURLs(url string) (urls []string) {
 	var urlsTmp []string
 	blogRaw.Find("article .box-bottom").Each(func(i int, s *goquery.Selection) {
 		u, _ := s.Find("a").Attr("href")
-		u = "http://www.keyakizaka46.com" + u
+		u = "https://www.keyakizaka46.com" + u
 		urlsTmp = append(urlsTmp, u)
 	})
 	urls = urlsTmp
@@ -145,7 +141,7 @@ func MultiPageURLs(tag string, numArray []string, url string) (urls []string) {
 		if tag == "plus" {
 			page++
 		} else {
-			if page >0 {
+			if page > 0 {
 				page--
 			} else {
 				break
@@ -170,7 +166,7 @@ func singlePageTurn(tag string, url string) (turl string, isExist bool) {
 		blogRaw := GetBlogRaw(url)
 		nextURL, _ := blogRaw.Find(".btn-next").Find("a").Attr("href")
 		if len(nextURL) > 0 {
-			turl = "http://www.keyakizaka46.com" + nextURL
+			turl = "https://www.keyakizaka46.com" + nextURL
 			isExist = true
 		} else {
 			turl = ""
@@ -180,7 +176,7 @@ func singlePageTurn(tag string, url string) (turl string, isExist bool) {
 		blogRaw := GetBlogRaw(url)
 		prevURL, _ := blogRaw.Find(".btn-prev").Find("a").Attr("href")
 		if len(prevURL) > 0 {
-			turl = "http://www.keyakizaka46.com" + prevURL
+			turl = "https://www.keyakizaka46.com" + prevURL
 			isExist = true
 		} else {
 			turl = ""
@@ -264,8 +260,6 @@ func replaceURL(url string, page int, flag bool) (nurl string) {
 	regPage := regexp.MustCompile(`page=[0-9]+`)
 	if flag {
 		page = page - 1
-	} else {
-		page = page
 	}
 	newp := "page=" + strconv.Itoa(page)
 	nurl = regPage.ReplaceAllString(url, newp)
@@ -303,14 +297,14 @@ func WriteToFile(filename string, text string) {
 	data := strings.NewReader(text)
 	buf := bufio.NewReader(data)
 	for {
-		line, err := buf.ReadString('\n')  
-		line = strings.TrimSpace(line)  
+		line, err := buf.ReadString('\n')
+		line = strings.TrimSpace(line)
 		if len(line) > 0 {
-			io.WriteString(saveFile, line + "\r\n")
+			io.WriteString(saveFile, line+"\r\n")
 		}
 		if err == io.EOF {
 			break
-		}  
+		}
 	}
 }
 
@@ -379,7 +373,7 @@ func URLAnalysis(url string, num string) (BlogMode BlogMode) {
 		if tag != "None" {
 			urlParts := strings.Split(url, "/")
 			membercode := strings.Split(urlParts[6], "?")[0]
-			urlReform := urlParts[0] + "/" + urlParts[1] + "/" + urlParts[2] + "/" + urlParts[3] + "/" + urlParts[4] + "/diary/member/list?ima=0000&ct="+ membercode +"&cd=member&page=0"
+			urlReform := urlParts[0] + "/" + urlParts[1] + "/" + urlParts[2] + "/" + urlParts[3] + "/" + urlParts[4] + "/diary/member/list?ima=0000&ct=" + membercode + "&cd=member&page=0"
 			BlogMode.mode = "page"
 			BlogMode.url = urlReform
 			BlogMode.number = number
@@ -466,7 +460,7 @@ func BlogURLsGet(BlogMode BlogMode) (urls []string, stat bool) {
 	} else {
 		urls = []string{}
 		stat = false
-		return 
+		return
 	}
 	return
 }
@@ -502,9 +496,9 @@ func URLAllocate(urls []string) {
 
 func main() {
 	// 接收地址
-	tipSingle := "[URL Single Page | 按篇]\nhttp://www.keyakizaka46.com/s/k46o/diary/detail/15117?ima=0000&cd=member"
-	tipPage := "[URL Page Index | 按页]\nhttp://www.keyakizaka46.com/s/k46o/diary/member/list?ima=0000&page=1&cd=member&ct=20"
-	tipProfile := "[URL Profile Page | 按页]\nhttp://www.keyakizaka46.com/s/k46o/artist/20?ima=0000"
+	tipSingle := "[URL Single Page | 按篇]\nhttps://www.keyakizaka46.com/s/k46o/diary/detail/15117?ima=0000&cd=member"
+	tipPage := "[URL Page Index | 按页]\nhttps://www.keyakizaka46.com/s/k46o/diary/member/list?ima=0000&page=1&cd=member&ct=20"
+	tipProfile := "[URL Profile Page | 按页]\nhttps://www.keyakizaka46.com/s/k46o/artist/20?ima=0000"
 	tipNum := "[Number Type | 数字类型]\n1 [current] | +4 / -6 Next or Prev | 1-5 a range of pages\n1 [当前页或篇] | +4 / -6 当前页或篇前后 | 1-5 一个页数范围"
 	fmt.Printf("A Blog URL and Number Type | 博客地址和获取方式\n")
 	fmt.Printf("---------Example-----------\n%s\n\n%s\n\n%s\n\n\n%s\n--------------------------\n", tipSingle, tipPage, tipProfile, tipNum)
